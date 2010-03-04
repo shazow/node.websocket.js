@@ -1,27 +1,16 @@
-/*
----
-name: server.js
-
-description: Main server initialization
-
-author: [Guillermo Rauch](http://devthought.com)
-...
-*/
-
 var tcp = require('tcp'),
     sys = require('sys'),
     tools = require('./tools'),
-    logger = require('./log'),
+    events = require('events');
 
-    // what the request headers should match
-    requestHeadersMatch = [
+
+var requestHeadersMatch = [
       /^GET (\/[^\s]*) HTTP\/1\.1$/,
       /^Upgrade: WebSocket$/,
       /^Connection: Upgrade$/,
       /^Host: (.+)$/,
       /^Origin: (.+)$/
     ],
-
     requestHeaders = [
       'GET {resource} HTTP/1.1',
       'Upgrade: WebSocket',
@@ -30,17 +19,15 @@ var tcp = require('tcp'),
       'Origin: {origin}',
       '',
       ''
-    ],
+    ];
 
-    // what the response headers should be
-    responseHeadersMatch = [
+var responseHeadersMatch = [
       /^HTTP\/1\.1 101 Web Socket Protocol Handshake/,
       /^Upgrade: WebSocket/,
       /^Connection: Upgrade/,
       /^WebSocket-Origin: (.+)$/,
       /^WebSocket-Location: (.+)$/
     ],
-
     responseHeaders = [
       'HTTP/1.1 101 Web Socket Protocol Handshake',
       'Upgrade: WebSocket',
@@ -49,310 +36,210 @@ var tcp = require('tcp'),
       'WebSocket-Location: {protocol}://{host}{resource}',
       '',
       ''
-    ],
-
-    log = function(message, type){
-      logger.store('['+ new Date() +'] ['+ (type || 'error') +'] ' + message);
-    },
-
-    empty = new Function,
-
-    Connection,
-
-Server = this.Server = function(options){
-  this.options = tools.merge({
-    port: 8080,
-    host: 'localhost',
-    origins: '*',
-    log: true,
-    logKey: null,
-    tls: false
-  }, options || {});
-
-  if (this.options.logKey === null) logger.setKey('node.websocket.' + this.options.host + '.' + this.options.port);
-
-  var self = this;
-  this.clients = 0;
-  this.server = tcp.createServer(function(socket){
-    new Connection(self, socket);
-  });
-  this.server.listen(this.options.port, this.options.host);
-
-  if (this.options.log) setInterval(function(){
-    sys.puts('['+ new Date() +'] [info] ' + self.clients + ' clients connected', 'info');
-  }, 5000);
-};
-
-Server.prototype._verifyOrigin = function(origin){
-  if (this.options.origins === '*' || this.options.origins === origin) return true;
-  if (!tools.isArray(this.options.origins)){
-    log('No valid `origins` array passed to constructor. This server wont accept any connections.', 'info');
-    return false;
-  }
-  for (var i = 0, l = this.options.origins.length; i < l; i++){
-    if (this.options.origins[i] === origin) return true;
-  }
-  return false;
-};
-
-Server.prototype._onConnect = function(){
-  this.clients++;
-};
-
-Server.prototype._onDisconnect = function(){
-  this.clients--;
-};
+    ];
 
 
-Client = this.Client = function(options){
-  this.options = tools.merge({
-    resource: '/',
-    port: 8080,
-    host: 'localhost',
-    log: true,
-    logKey: null,
-    tls: false
-  }, options || {});
-
-  if (this.options.logKey === null) logger.setKey('node.websocket.' + this.options.host + '.' + this.options.port);
-
-  this.handshaked = false;
-  this.data = "";
-  var self = this;
-  var socket = this.socket = tcp.createConnection(this.options.port, this.options.host);
-
-  this.log = this.options.log ? function(message, type){
-    log('[server '+ self.options.host + ':' + self.options.port +'] ' + message, type);
-  } : empty;
-
-  socket.setTimeout(0);
-  socket.setNoDelay(true); // disabling Nagle's algorithm is encouraged for real time transmissions
-  socket.setEncoding('utf8'); // per spec
-  socket.addListener('connect', function(){ self._onConnect(); });
-  socket.addListener('receive', function(data){ self._onReceive(data); });
-  socket.addListener('eof', function(){ self._onDisconnect(); });
-};
-
-Client.prototype._onConnect = function() {
-  this.log('Sending handshake', 'info');
-
-  var self = this;
-  self.socket.send(tools.substitute(requestHeaders.join('\r\n'), {
-    resource: self.options.resource,
-    host: self.options.host,
-    origin: 'file://'
-  }));
+function log(msg) {
+        sys.puts(msg);
 }
 
-Client.prototype._onDisconnect = function() {
 
+var WebSocket = this.WebSocket = function(socket) {
+    events.EventEmitter.call(this);
+
+    this.socket = socket;
+    this.closed = false;
+
+    socket.setTimeout(0);
+    socket.setNoDelay(true);
+    socket.setEncoding('utf8');
+    socket.addListener('end', function() { this.close(); });
+}
+sys.inherits(WebSocket, events.EventEmitter);
+
+WebSocket.prototype.close = function() {
+    if(closed) return;
+    this.closed = true;
+    this.socket.close();
+    this.emit('disconnect');
+}
+WebSocket.prototype.send = function(data) {
+    try {
+        this.socket.write('\u0000' + data + '\uffff');
+    } catch(e) {
+        this.close();
+    }
+}
+WebSocket.prototype._receive = function(data) {
+    this.data += data;
+
+    chunks = this.data.split('\ufffd');
+    chunk_count = chunks.length - 1; // last chunk is either incomplete or ""
+
+    for (var i = 0; i < chunk_count; i++) {
+        chunk = chunks[i];
+        if (chunk[0] != '\u0000') {
+            this.log('Data incorrectly framed by UA. Dropping connection');
+            this.close();
+            return false;
+        }
+
+        this.emit('data', chunk.slice(1));
+    }
+
+    this.data = chunks[chunks.length - 1];
 }
 
-Client.prototype._onReceive = function(data) {
-  this.log("Received data");
-  if (this.handshaked){
-    this._handle(data);
-  } else {
-    this._handshake(data)
-  }
+
+var Server = this.Server = function(options) {
+    events.EventEmitter.call(this);
+
+    this.options = tools.merge({
+        port: 8080,
+        host: 'localhost',
+        origins: '*',
+        tls: false
+    }, options || {});
+
+    this.connections = 0;
+
+    var self = this;
+}
+sys.inherits(Server, events.EventEmitter);
+
+Server.prototype.listen = function(port, host) {
+    tcp.createServer(function(socket) {
+        var ws = new WebSocket(socket);
+        socket.addListener('connect', function() {
+            self.clients++;
+        });
+        var data_listener = function(data) { // We need it named so we can unbind it later
+            var ok = self.handshake(socket, data);
+            if(!ok) return;
+
+            // Delegate the rest of the handling to the WebSocket abstraction.
+            socket.addListener('data', function(data) { ws._receive(data) });
+            socket.removeListener('data', data_listener);
+            self.emit('connect', ws);
+        }
+        socket.addListener('data', data_listener);
+        socket.addListener('disconnect', function() {
+            self.clients--;
+        });
+    }).listen(port, host);
+};
+
+Server.prototype.handshake = function(socket, data) {
+    var headers = data.split('\r\n');
+
+    // Serve flash policy?
+    if (headers.length && headers[0].match(/<policy-file-request.*>/)) {
+        this._serveFlashPolicy();
+        return false;
+    }
+
+    // Perform handshake
+    for (var i = 0, l = headers.length, match; i < l; i++) {
+        if (i === requestHeadersMatch.length) break; // handle empty lines that UA send 
+        match = headers[i].match(requestHeadersMatch[i]);
+        if (match && match.length > 1) matches.push(match[1]);
+        else if (!match) { // Bad handshake?
+            socket.close();
+            return false;
+        }
+    }
+
+    // Check origin
+    if (!this._verifyOrigin(matches[2])) {
+        socket.close();
+        return false;
+    }
+
+    // Send response handshake
+    socket.write(tools.substitute(responseHeaders.join('\r\n'), {
+        resource: matches[0],
+        host: matches[1],
+        origin: matches[2],
+        protocol: this.secure ? 'wss' : 'ws'
+    }));
+    return true;
 }
 
-Client.prototype._handshake = function(data){
-  var self = this,
-      matches = [],
-      module,
-      headers = data.split('\r\n');
+Server.prototype._serveFlashPolicy = function(socket) {
+    var origins = this.options.origins;
+    if (!tools.isArray(origins)) origins = [origins];
 
-  for (var i = 0, l = headers.length, end = responseHeadersMatch.length, match; i < l; i++){
-    if (i === end) break; // handle empty lines that UA send
-    match = headers[i].match(responseHeadersMatch[i]);
-    if (match && match.length > 1){
-      // if there's a capture group, push it into the matches
-      matches.push(match[1]);
-    } else if (!match) {
-      this.log('Handshake aborted. Bad header ' + headers[i]);
-      this.socket.forceClose()
-      return false;
+    this.socket.write('<?xml version="1.0"?>\n');
+    this.socket.write('<!DOCTYPE cross-domain-policy SYSTEM "http://www.macromedia.com/xml/dtds/cross-domain-policy.dtd">\n');
+    this.socket.write('<cross-domain-policy>\n');
+    for (var i = 0, l = origins.length; i < l; i++) {
+        this.socket.write('  <allow-access-from domain="' + origins[i] + '" to-ports="' + this.options.port + '"/>\n');
     }
-  }
-  this.handshaked = true;
-  this.log('Handshake completed', 'info');
-
-  if (this.onConnect) this.onConnect();
-
-  return true;
-};
-
-Client.prototype._handle = function(data){
-  this.data += data;
-
-  chunks = this.data.split('\ufffd');
-  chunk_count = chunks.length - 1; // last chunk is either incomplete or ""
-
-  for (var i = 0; i < chunk_count; i++) {
-    chunk = chunks[i];
-    if (chunk[0] != '\u0000') {
-      this.log('Data incorrectly framed by UA. Dropping connection');
-      this.socket.forceClose();
-      return false;
-    }
-    if (this.onData) this.onData(chunk.slice(1), this);
-  }
-
-  this.data = chunks[chunks.length - 1];
-
-  return true;
-};
-
-Client.prototype.send = function(data) {
-  this.socket.send('\u0000' + data + '\uffff');
-};
-
-
-this.Connection = Connection = function(server, socket){
-  this.server = server;
-  this.socket = socket;
-  this.handshaked = false;
-  this.data = "";
-
-  this.log = server.options.log ? function(message, type){
-    log('[client '+ socket.remoteAddress +'] ' + message, type);
-  } : empty;
-  this.log('Server created', 'info');
-
-  var self = this;
-  if (server.options.tls) socket.setSecure();
-  socket.setTimeout(0);
-  socket.setNoDelay(true); // disabling Nagle's algorithm is encouraged for real time transmissions
-  socket.setEncoding('utf8'); // per spec
-  socket.addListener('connect', function(){ self.onConnect(); });
-  socket.addListener('receive', function(data){ self._onReceive(data); });
-  socket.addListener('eof', function(){ self._onDisconnect(); });
-};
-
-Connection.prototype.onConnect = function(data){
-  this.log("Connected", "info")
-
-  this.server._onConnect(this);
-};
-
-Connection.prototype._onReceive = function(data){
-  if (this.handshaked){
-    this._handle(data);
-  } else {
-    this._handshake(data)
-  }
-};
-
-Connection.prototype._onDisconnect = function(){
-  this.log("Disconnected", "info")
-
-  if (this.module && this.module.onDisconnect) this.module.onDisconnect(this);
-  this.socket.close();
-  this.server._onDisconnect(this);
-};
-
-Connection.prototype.send = function(data){
-  try {
-    this.socket.send('\u0000' + data + '\uffff');
-  } catch(e) {
+    this.socket.write('</cross-domain-policy>\n');
     this.socket.close();
-  }
-};
+}
 
-Connection.prototype._handle = function(data){
-  this.data += data;
-
-  chunks = this.data.split('\ufffd');
-  chunk_count = chunks.length - 1; // last chunk is either incomplete or ""
-
-  for (var i = 0; i < chunk_count; i++) {
-    chunk = chunks[i];
-    if (chunk[0] != '\u0000') {
-      this.log('Data incorrectly framed by UA. Dropping connection');
-      this.socket.close();
-      return false;
+Server.prototype._verifyOrigin = function(origin) {
+    if (this.options.origins === '*' || this.options.origins === origin) return true;
+    if (!tools.isArray(this.options.origins)) {
+        log('No valid `origins` array passed to constructor. This server wont accept any connections.', 'info');
+        return false;
     }
-
-    if (this.module && this.module.onData) this.module.onData(chunk.slice(1), this);
-  }
-
-  this.data = chunks[chunks.length - 1];
-
-  return true;
-};
-
-Connection.prototype._handshake = function(data){
-  this.log('Performing handshake', 'info');
-
-  var self = this,
-      matches = [],
-      module,
-      headers = data.split('\r\n');
-
-  if (headers.length && headers[0].match(/<policy-file-request.*>/)) {
-    // allows Flash based WebSocket implementation to connect.
-    // e.g. http://github.com/gimite/web-socket-js
-    this.log('Flash policy file request');
-    this._serveFlashPolicy();
+    for (var i = 0, l = this.options.origins.length; i < l; i++) {
+        if (this.options.origins[i] === origin) return true;
+    }
     return false;
-  }
+};
 
-  for (var i = 0, l = headers.length, match; i < l; i++){
-    if (i === requestHeadersMatch.length) break; // handle empty lines that UA send
-    match = headers[i].match(requestHeadersMatch[i]);
-    if (match && match.length > 1){
-      // if there's a capture group, push it into the matches
-      matches.push(match[1]);
-    } else if (!match) {
-      this.log('Handshake aborted. Bad header ' + headers[i]);
-      this.socket.close()
-      return false;
+
+var Client = this.Client = function(options) {
+    events.EventEmitter.call(this);
+
+    this.options = tools.merge({
+        port: 8080,
+        host: 'localhost',
+        origin: 'file://',
+        tls: false
+    }, options || {});
+};
+sys.inherits(Client, events.EventEmitter);
+
+Client.prototype.connect = function() {
+    var socket = tcp.createConnection(this.options.port, this.options.host);
+    var ws = new WebSocket(socket);
+    var self = this;
+    socket.addListener('connect', function() {
+        socket.send(tools.substitute(requestHeaders.join('\r\n'), {
+            resource: self.options.resource,
+            host: self.options.host,
+            origin: self.options.origin,
+        }));
+    });
+    var data_listener = function(data) { // We need it named so we can unbind it later
+        var ok = self.handshake(socket, data);
+        if(!ok) return;
+
+        // Delegate the rest of the handling to the WebSocket abstraction.
+        socket.addListener('data', function(data) { ws._receive(data) });
+        socket.removeListener('data', data_listener);
+        self.emit('connect', ws);
     }
-  }
+    socket.addListener('data', data_listener);
+}
 
-  if (!this.server._verifyOrigin(matches[2])){
-    this.log('Handshake aborted. Security policy disallows Origin: ' + matches[2]);
-    this.socket.close();
-  }
+Client.prototype.handshake = function(socket, data) {
+    var headers = data.split('\r\n');
 
-  module = './modules' + (matches[0] == '/' ? '/_default' : matches[0]).toLowerCase();
-  try {
-    var module = require(module);
-    this.module = new module.Module();
-  } catch(e){
-    this.log('Handshake aborted. Could not stat module file ' + module + '.js' + ' for resource ' + matches[0]);
-    this.socket.close();
-    return false;
-  }
+    // Perform handshake
+    for (var i = 0, l = headers.length, end = responseHeadersMatch.length, match; i < l; i++) {
+        if (i === end) break; // handle empty lines that UA send
+        match = headers[i].match(responseHeadersMatch[i]);
+        if (match && match.length > 1) matches.push(match[1]);
+        else if (!match) { // Bad handshake
+          this.socket.forceClose()
+          return false;
+        }
+    }
 
-  this.socket.send(tools.substitute(responseHeaders.join('\r\n'), {
-    resource: matches[0],
-    host: matches[1],
-    origin: matches[2],
-    protocol: this.server.secure ? 'wss' : 'ws'
-  }));
-
-  this.handshaked = true;
-  this.log('Handshake sent', 'info');
-
-  // call onConnect callback on module
-  if (this.module && this.module.onConnect) this.module.onConnect(this);
-
-  return true;
-};
-
-Connection.prototype._serveFlashPolicy = function(){
-  var origins = this.server.options.origins;
-  if (!tools.isArray(origins)) {
-    origins = [origins];
-  }
-  this.socket.send('<?xml version="1.0"?>\n');
-  this.socket.send('<!DOCTYPE cross-domain-policy SYSTEM "http://www.macromedia.com/xml/dtds/cross-domain-policy.dtd">\n');
-  this.socket.send('<cross-domain-policy>\n');
-  for (var i = 0, l = origins.length; i < l; i++){
-    this.socket.send('  <allow-access-from domain="' + origins[i] + '" to-ports="' + this.server.options.port + '"/>\n');
-  }
-  this.socket.send('</cross-domain-policy>\n');
-  this.socket.close();
-};
+    return true;
+}
