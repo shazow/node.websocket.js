@@ -1,4 +1,16 @@
 var tools = require('./tools'),
     websocket = require('./websocket');
 
-new websocket.Server(tools.argvToObject(process.ARGV));
+
+function log(msg) {
+        sys.puts(msg);
+}
+
+var server = new websocket.Server(tools.argvToObject(process.ARGV));
+
+server.addListener('connect', function(ws, target) {
+    log("Request for: " + target);
+});
+
+server.listen(8000, 'localhost');
+

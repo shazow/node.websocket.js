@@ -63,7 +63,7 @@ WebSocket.prototype.close = function() {
     this.socket.close();
     this.emit('disconnect');
 }
-WebSocket.prototype.send = function(data) {
+WebSocket.prototype.write = function(data) {
     try {
         this.socket.write('\u0000' + data + '\uffff');
     } catch(e) {
@@ -102,31 +102,32 @@ var Server = this.Server = function(options) {
     }, options || {});
 
     this.connections = 0;
-
-    var self = this;
 }
 sys.inherits(Server, events.EventEmitter);
 
 Server.prototype.listen = function(port, host) {
-    tcp.createServer(function(socket) {
+    this.socket = tcp.createServer(function(socket) {
+        log("Creating server...");
         var ws = new WebSocket(socket);
         socket.addListener('connect', function() {
+            log("Connected");
             self.clients++;
         });
         var data_listener = function(data) { // We need it named so we can unbind it later
-            var ok = self.handshake(socket, data);
-            if(!ok) return;
+            var target = self.handshake(socket, data);
+            if(!target) return;
 
             // Delegate the rest of the handling to the WebSocket abstraction.
             socket.addListener('data', function(data) { ws._receive(data) });
             socket.removeListener('data', data_listener);
-            self.emit('connect', ws);
+            self.emit('connect', ws, target);
         }
         socket.addListener('data', data_listener);
         socket.addListener('disconnect', function() {
             self.clients--;
         });
-    }).listen(port, host);
+    });
+    this.socket.listen(port, host);
 };
 
 Server.prototype.handshake = function(socket, data) {
@@ -162,7 +163,8 @@ Server.prototype.handshake = function(socket, data) {
         origin: matches[2],
         protocol: this.secure ? 'wss' : 'ws'
     }));
-    return true;
+
+    return matches[0]; // Target request
 }
 
 Server.prototype._serveFlashPolicy = function(socket) {
@@ -198,7 +200,7 @@ var Client = this.Client = function(options) {
     this.options = tools.merge({
         port: 8080,
         host: 'localhost',
-        origin: 'file://',
+        origin: 'file://', /// FIXME: What should this be default?
         tls: false
     }, options || {});
 };
@@ -209,7 +211,8 @@ Client.prototype.connect = function() {
     var ws = new WebSocket(socket);
     var self = this;
     socket.addListener('connect', function() {
-        socket.send(tools.substitute(requestHeaders.join('\r\n'), {
+        log("Connected");
+        socket.write(tools.substitute(requestHeaders.join('\r\n'), {
             resource: self.options.resource,
             host: self.options.host,
             origin: self.options.origin,
@@ -236,7 +239,7 @@ Client.prototype.handshake = function(socket, data) {
         match = headers[i].match(responseHeadersMatch[i]);
         if (match && match.length > 1) matches.push(match[1]);
         else if (!match) { // Bad handshake
-          this.socket.forceClose()
+          socket.forceClose()
           return false;
         }
     }
