@@ -46,6 +46,7 @@ function log(msg) {
 
 var WebSocket = this.WebSocket = function(socket) {
     events.EventEmitter.call(this);
+    log("Creating socket: " + this);
 
     this.socket = socket;
     this.closed = false;
