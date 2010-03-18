@@ -46,23 +46,25 @@ function log(msg) {
 
 var WebSocket = this.WebSocket = function(socket) {
     events.EventEmitter.call(this);
-    log("Creating socket: " + this);
 
     this.socket = socket;
     this.closed = false;
+    this.data = "";
 
     socket.setTimeout(0);
     socket.setNoDelay(true);
     socket.setEncoding('utf8');
-    socket.addListener('end', function() { this.close(); });
+
+    var self = this;
+    socket.addListener('end', function(had_error) { self.close(had_error); });
 }
 sys.inherits(WebSocket, events.EventEmitter);
 
-WebSocket.prototype.close = function() {
-    if(closed) return;
+WebSocket.prototype.close = function(had_error) {
+    if(this.closed) return;
     this.closed = true;
     this.socket.close();
-    this.emit('disconnect');
+    this.emit('end', had_error);
 }
 WebSocket.prototype.write = function(data) {
     try {
@@ -80,7 +82,7 @@ WebSocket.prototype._receive = function(data) {
     for (var i = 0; i < chunk_count; i++) {
         chunk = chunks[i];
         if (chunk[0] != '\u0000') {
-            this.log('Data incorrectly framed by UA. Dropping connection');
+            log('Data incorrectly framed by UA. Dropping connection');
             this.close();
             return false;
         }
@@ -88,7 +90,10 @@ WebSocket.prototype._receive = function(data) {
         this.emit('data', chunk.slice(1));
     }
 
-    this.data = chunks[chunks.length - 1];
+    this.data = chunks[chunk_count];
+}
+WebSocket.prototype.toString = function() {
+    return "[WebSocket @ " + this.socket.remoteAddress + "]";
 }
 
 
@@ -107,11 +112,10 @@ var Server = this.Server = function(options) {
 sys.inherits(Server, events.EventEmitter);
 
 Server.prototype.listen = function(port, host) {
+    var self = this;
     this.socket = tcp.createServer(function(socket) {
-        log("Creating server...");
         var ws = new WebSocket(socket);
         socket.addListener('connect', function() {
-            log("Connected");
             self.clients++;
         });
         var data_listener = function(data) { // We need it named so we can unbind it later
@@ -124,7 +128,7 @@ Server.prototype.listen = function(port, host) {
             self.emit('connect', ws, target);
         }
         socket.addListener('data', data_listener);
-        socket.addListener('disconnect', function() {
+        socket.addListener('end', function() {
             self.clients--;
         });
     });
@@ -133,6 +137,7 @@ Server.prototype.listen = function(port, host) {
 
 Server.prototype.handshake = function(socket, data) {
     var headers = data.split('\r\n');
+    var matches = [];
 
     // Serve flash policy?
     if (headers.length && headers[0].match(/<policy-file-request.*>/)) {
@@ -146,6 +151,7 @@ Server.prototype.handshake = function(socket, data) {
         match = headers[i].match(requestHeadersMatch[i]);
         if (match && match.length > 1) matches.push(match[1]);
         else if (!match) { // Bad handshake?
+            log("Bad handshake, aborting...");
             socket.close();
             return false;
         }
@@ -153,6 +159,7 @@ Server.prototype.handshake = function(socket, data) {
 
     // Check origin
     if (!this._verifyOrigin(matches[2])) {
+        log("Bad origin, aborting...");
         socket.close();
         return false;
     }
@@ -202,6 +209,7 @@ var Client = this.Client = function(options) {
         port: 8080,
         host: 'localhost',
         origin: 'file://', /// FIXME: What should this be default?
+        resource: '/',
         tls: false
     }, options || {});
 };
@@ -212,7 +220,6 @@ Client.prototype.connect = function() {
     var ws = new WebSocket(socket);
     var self = this;
     socket.addListener('connect', function() {
-        log("Connected");
         socket.write(tools.substitute(requestHeaders.join('\r\n'), {
             resource: self.options.resource,
             host: self.options.host,
@@ -233,6 +240,7 @@ Client.prototype.connect = function() {
 
 Client.prototype.handshake = function(socket, data) {
     var headers = data.split('\r\n');
+    var matches = [];
 
     // Perform handshake
     for (var i = 0, l = headers.length, end = responseHeadersMatch.length, match; i < l; i++) {
