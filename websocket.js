@@ -43,7 +43,7 @@ var WebSocket = this.WebSocket = function(socket) {
     events.EventEmitter.call(this);
 
     socket.setTimeout(0);
-    socket.setNoDelay(true);
+    //socket.setNoDelay(true);
     socket.setEncoding('utf8');
 
     this.socket = socket;
@@ -70,6 +70,7 @@ WebSocket.prototype.write = function(data) {
     }
 }
 WebSocket.prototype._receive = function(data) {
+    if(this.closed) return; // FIXME: Do we care if we receive more data after closing?
     this.data += data;
 
     chunks = this.data.split('\ufffd');
