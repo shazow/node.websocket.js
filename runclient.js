@@ -1,4 +1,4 @@
-var NUM_CLIENTS=3; // Number of clients to make for this demo
+var NUM_CLIENTS=1; // Number of clients to make for this demo
 
 var tools = require('./tools'),
     websocket = require('./websocket'),
@@ -14,16 +14,22 @@ function make_client(name) {
 
     client.addListener('connect', function(ws) {
         log(name, "Connected.");
+
+        function send(data) {
+            log(name, "Sending: " + data);
+            ws.write(data);
+        }
+
         ws.addListener('data', function(data) {
             log(name, "Received: " + data);
 
-            ws.write("I'm good. Gotta run, bye.");
+            send("Ok, bye!");
             ws.close();
         });
         ws.addListener('close', function() {
             log(name, "Disconnected.");
         });
-        ws.write('Hi server.');
+        send('Hi server, can you hear me?');
     });
     client.addListener('error', function(msg) {
         log(name, "Error: " + msg);

@@ -16,12 +16,17 @@ server.addListener('connect', function(ws, target) {
 
     log(name, "Received request for: " + target);
 
+    function send(data) {
+        log(name, "Sending: " + data);
+        ws.write(data);
+    }
+
     // Setup listeners for this specific websocket connection
 
     ws.addListener('data', function(data) {
         log(name, "Received: " + data);
 
-        ws.write("Hi, how are you?");
+        send("I heard you say: " + data);
     });
     ws.addListener('end', function() {
         log(name, "Disconnected.");
