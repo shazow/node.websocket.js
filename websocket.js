@@ -39,21 +39,17 @@ var responseHeadersMatch = [
     ];
 
 
-function log(msg) {
-        sys.puts(msg);
-}
-
-
 var WebSocket = this.WebSocket = function(socket) {
     events.EventEmitter.call(this);
-
-    this.socket = socket;
-    this.closed = false;
-    this.data = "";
 
     socket.setTimeout(0);
     socket.setNoDelay(true);
     socket.setEncoding('utf8');
+
+    this.socket = socket;
+    this.closed = false;
+    this.readyState = 0;
+    this.data = "";
 
     var self = this;
     socket.addListener('end', function(had_error) { self.close(had_error); });
@@ -82,7 +78,7 @@ WebSocket.prototype._receive = function(data) {
     for (var i = 0; i < chunk_count; i++) {
         chunk = chunks[i];
         if (chunk[0] != '\u0000') {
-            log('Data incorrectly framed by UA. Dropping connection');
+            this.emit('error', 'Data incorrectly framed by UA');
             this.close();
             return false;
         }
@@ -104,6 +100,7 @@ var Server = this.Server = function(options) {
         port: 8080,
         host: 'localhost',
         origins: '*',
+        secure: false,
         tls: false
     }, options || {});
 
@@ -114,22 +111,31 @@ sys.inherits(Server, events.EventEmitter);
 Server.prototype.listen = function(port, host) {
     var self = this;
     this.socket = tcp.createServer(function(socket) {
+        if (self.options.tls) socket.setSecure();
         var ws = new WebSocket(socket);
+
         socket.addListener('connect', function() {
             self.clients++;
         });
-        var data_listener = function(data) { // We need it named so we can unbind it later
-            var target = self.handshake(socket, data);
-            if(!target) return;
-
-            // Delegate the rest of the handling to the WebSocket abstraction.
-            socket.addListener('data', function(data) { ws._receive(data) });
-            socket.removeListener('data', data_listener);
-            self.emit('connect', ws, target);
-        }
-        socket.addListener('data', data_listener);
         socket.addListener('end', function() {
             self.clients--;
+        });
+        socket.addListener('data', function handshake_listener(data) {
+            socket.pause();
+            socket.removeListener('data', handshake_listener);
+            ws.readyState++; // Begin handshake
+
+            var target = self.handshake(socket, data);
+            if(!target) {
+                ws.close();
+                return; // Handshake failed
+            }
+
+            ws.readyState++; // Done handshake
+            self.emit('connect', ws, target);
+
+            socket.addListener('data', function(data) { ws._receive(data); });
+            socket.resume();
         });
     });
     this.socket.listen(port, host);
@@ -151,16 +157,14 @@ Server.prototype.handshake = function(socket, data) {
         match = headers[i].match(requestHeadersMatch[i]);
         if (match && match.length > 1) matches.push(match[1]);
         else if (!match) { // Bad handshake?
-            log("Bad handshake, aborting...");
-            socket.close();
+            this.emit('error', 'Bad handshake');
             return false;
         }
     }
 
     // Check origin
     if (!this._verifyOrigin(matches[2])) {
-        log("Bad origin, aborting...");
-        socket.close();
+        this.emit('error', 'Bad origin');
         return false;
     }
 
@@ -169,7 +173,7 @@ Server.prototype.handshake = function(socket, data) {
         resource: matches[0],
         host: matches[1],
         origin: matches[2],
-        protocol: this.secure ? 'wss' : 'ws'
+        protocol: this.options.secure ? 'wss' : 'ws'
     }));
 
     return matches[0]; // Target request
@@ -190,14 +194,11 @@ Server.prototype._serveFlashPolicy = function(socket) {
 }
 
 Server.prototype._verifyOrigin = function(origin) {
-    if (this.options.origins === '*' || this.options.origins === origin) return true;
-    if (!tools.isArray(this.options.origins)) {
-        log('No valid `origins` array passed to constructor. This server wont accept any connections.', 'info');
-        return false;
-    }
+    if (!this.options.origins || this.options.origins === '*' || this.options.origins === origin) return true;
     for (var i = 0, l = this.options.origins.length; i < l; i++) {
         if (this.options.origins[i] === origin) return true;
     }
+    this.emit('error', 'Origin rejected: ' + origin);
     return false;
 };
 
@@ -210,6 +211,7 @@ var Client = this.Client = function(options) {
         host: 'localhost',
         origin: 'file://', /// FIXME: What should this be default?
         resource: '/',
+        secure: false,
         tls: false
     }, options || {});
 };
@@ -217,6 +219,8 @@ sys.inherits(Client, events.EventEmitter);
 
 Client.prototype.connect = function() {
     var socket = tcp.createConnection(this.options.port, this.options.host);
+    if (this.options.tls) socket.setSecure();
+
     var ws = new WebSocket(socket);
     var self = this;
     socket.addListener('connect', function() {
@@ -226,19 +230,33 @@ Client.prototype.connect = function() {
             origin: self.options.origin,
         }));
     });
-    var data_listener = function(data) { // We need it named so we can unbind it later
-        var ok = self.handshake(socket, data);
-        if(!ok) return;
+    socket.addListener('data', function handshake_listener(data) {
+        socket.pause();
+        socket.removeListener('data', handshake_listener);
+        ws.readyState++; // Begin handshake
 
-        // Delegate the rest of the handling to the WebSocket abstraction.
-        socket.addListener('data', function(data) { ws._receive(data) });
-        socket.removeListener('data', data_listener);
-        self.emit('connect', ws);
-    }
-    socket.addListener('data', data_listener);
+        var ok = self.handshake(socket, data);
+        if(!ok) {
+            ws.close();
+            return;
+        }
+
+        ws.readyState++; // Done handshake
+        self.emit('connect', ws, ok);
+
+        socket.addListener('data', function(data) { ws._receive(data); });
+        socket.resume();
+    });
 }
 
 Client.prototype.handshake = function(socket, data) {
+    var data_sep = data.indexOf('\ufffd');
+    var data_extra = false;
+    if(data_sep >= 0) {
+        data_extra = data.substr(data_sep);
+        data = data.substr(0, data_sep);
+    }
+
     var headers = data.split('\r\n');
     var matches = [];
 
