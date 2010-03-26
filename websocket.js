@@ -217,8 +217,8 @@ var Client = this.Client = function(options) {
 };
 sys.inherits(Client, events.EventEmitter);
 
-Client.prototype.connect = function() {
-    var socket = tcp.createConnection(this.options.port, this.options.host);
+Client.prototype.connect = function(port, host) {
+    var socket = tcp.createConnection(port, host);
     if (this.options.tls) socket.setSecure();
 
     var ws = new WebSocket(socket);
@@ -266,8 +266,9 @@ Client.prototype.handshake = function(socket, data) {
         match = headers[i].match(responseHeadersMatch[i]);
         if (match && match.length > 1) matches.push(match[1]);
         else if (!match) { // Bad handshake
-          socket.forceClose()
-          return false;
+            this.emit('error', 'Bad handshake');
+            socket.forceClose()
+            return false;
         }
     }
 
