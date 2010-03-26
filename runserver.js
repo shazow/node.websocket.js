@@ -20,6 +20,8 @@ server.addListener('connect', function(ws, target) {
 
     ws.addListener('data', function(data) {
         log(name, "Received: " + data);
+
+        ws.write("Hi, how are you?");
     });
     ws.addListener('end', function() {
         log(name, "Disconnected.");
@@ -27,9 +29,6 @@ server.addListener('connect', function(ws, target) {
     ws.addListener('error', function(msg) {
         log(name, "Transmission error: " + msg); // Things like bad UA data padding.
     });
-
-    log(name, "Sending hi...");
-    ws.write("Hi client.");
 });
 server.addListener('error', function(msg) {
     log('Error', msg); // Things like bad handshake, bad origin
