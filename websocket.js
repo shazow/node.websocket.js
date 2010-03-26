@@ -1,3 +1,18 @@
+/*
+---
+name: websocket.js
+
+description:
+    WebSocket server and client event-driven implementation for node.js.
+
+    Inspired by [Guillermo Rauch](http://devthought.com)'s
+    [node.websocket.js](http://github.com/Guille/node.websocket.js) which
+    resulted in a complete rewrite.
+
+author: [Andrey Petrov](http://github.com/shazow)
+
+*/
+
 var tcp = require('tcp'),
     sys = require('sys'),
     tools = require('./tools'),
@@ -100,7 +115,7 @@ var Server = this.Server = function(options) {
     this.options = tools.merge({
         port: 8080,
         host: 'localhost',
-        origins: '*',
+        origins: ['*'],
         secure: false,
         tls: false
     }, options || {});
@@ -182,7 +197,6 @@ Server.prototype.handshake = function(socket, data) {
 
 Server.prototype._serveFlashPolicy = function(socket) {
     var origins = this.options.origins;
-    if (!tools.isArray(origins)) origins = [origins];
 
     this.socket.write('<?xml version="1.0"?>\n');
     this.socket.write('<!DOCTYPE cross-domain-policy SYSTEM "http://www.macromedia.com/xml/dtds/cross-domain-policy.dtd">\n');
@@ -195,7 +209,7 @@ Server.prototype._serveFlashPolicy = function(socket) {
 }
 
 Server.prototype._verifyOrigin = function(origin) {
-    if (!this.options.origins || this.options.origins === '*' || this.options.origins === origin) return true;
+    if (!this.options.origins || this.options.origins[0] === '*') return true; // Accept all.
     for (var i = 0, l = this.options.origins.length; i < l; i++) {
         if (this.options.origins[i] === origin) return true;
     }
