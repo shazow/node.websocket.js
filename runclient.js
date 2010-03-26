@@ -17,7 +17,7 @@ function make_client(name) {
         ws.addListener('data', function(data) {
             log(name, "Received: " + data);
 
-            ws.write("I'm good. Bye.");
+            ws.write("I'm good. Gotta run, bye.");
             ws.close();
         });
         ws.addListener('close', function() {
