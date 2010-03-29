@@ -1,7 +1,6 @@
 var NUM_CLIENTS=1; // Number of clients to make for this demo
 
-var tools = require('./tools'),
-    websocket = require('./websocket'),
+var websocket = require('./websocket'),
     sys = require('sys');
 
 
